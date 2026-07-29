@@ -539,6 +539,21 @@
     ["Juliana Santos","14:28:03",96.8],
   ];
 
+  // Função para capturar o frame do vídeo e converter em Base64
+  function captureFrameFromVideo() {
+    const canvas = document.createElement('canvas');
+    // Ajusta o tamanho do canvas para o tamanho real do vídeo
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d');
+    // Desenha o frame atual do vídeo no canvas
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // Retorna a imagem em formato Base64 (JPEG)
+    return canvas.toDataURL('image/jpeg');
+  }
+
   function renderHistory(){
     historyList.innerHTML = "";
     history.slice(0,6).forEach(([name,time,score]) => {
@@ -680,47 +695,84 @@
     faceBoxesEl.appendChild(box);
   }
 
-  function runDetectionCycle(){
+  async function runDetectionCycle() {
     if (!running) return;
     setLegendState('detecting');
-    mFaces.textContent = '1';
 
-    setTimeout(() => {
-      if (!running) return;
-      const recognized = Math.random() > 0.25;
-      const infMs = (18 + Math.random()*14).toFixed(1);
-      const latMs = (parseFloat(infMs) + 6 + Math.random()*10).toFixed(1);
+    // Verifica se o vídeo tem dimensões válidas para capturar
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      cycleTimer = setTimeout(runDetectionCycle, 500);
+      return;
+    }
 
-      if (recognized) {
-        const name = names[Math.floor(Math.random()*names.length)];
-        const score = 88 + Math.random()*11;
-        setLegendState('recognized');
-        setPersonRecognized(name, score);
-        mConf.textContent = score.toFixed(1) + '%';
-        mDist.textContent = (0.15 + Math.random()*0.25).toFixed(3);
-        drawFaceBox(true, name);
-        history.unshift([name, nowLabel(), score]);
-        total += 1;
-        totalIds.textContent = total.toLocaleString('pt-BR');
-        renderHistory();
+    // 1. Capturar o frame
+    const base64Image = captureFrameFromVideo();
+    const startTime = Date.now();
+
+    try {
+      // 2. Enviar para a API /recognize
+      const response = await fetch(`${API_BASE_URL}/recognize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        // Envia o JSON com a chave "image" exigida pelo FastAPI
+        body: JSON.stringify({ image: base64Image }) 
+      });
+
+      if (!response.ok) throw new Error("Erro na API");
+
+      const data = await response.json();
+      const latency = Date.now() - startTime;
+
+      // 3. Atualizar a seção "Resultado da Predição"
+      updatePredictionMetrics({
+        confidence: data.confianca,
+        inference_ms: data.tempo_inferencia,
+        latency_ms: latency,
+        embedding_distance: data.distancia,
+        faces_detected: data.rostos_encontrados
+      });
+
+      // 4. Atualizar o Card de Pessoa Reconhecida e a Bounding Box
+      if (data.rostos_encontrados > 0) {
+        if (data.reconhecido) {
+          setLegendState('recognized');
+          setPersonRecognized(data.nome, data.confianca);
+          drawFaceBox(true, data.nome); // Pode precisar adaptar coordenadas futuramente
+          
+          // Atualiza o histórico
+          history.unshift([data.nome, nowLabel(), data.confianca]);
+          total += 1;
+          totalIds.textContent = total.toLocaleString('pt-BR');
+          renderHistory();
+        } else {
+          setLegendState('unknown');
+          setPersonUnknown();
+          personSub.textContent = 'Rosto não identificado na base';
+          drawFaceBox(false, '');
+        }
       } else {
-        setLegendState('unknown');
-        setPersonUnknown();
-        personSub.textContent = 'Rosto não identificado na base';
-        mConf.textContent = (30 + Math.random()*25).toFixed(1) + '%';
-        mDist.textContent = (0.55 + Math.random()*0.3).toFixed(3);
-        drawFaceBox(false, '');
-      }
-      mInf.textContent = infMs + ' ms';
-      mLat.textContent = latMs + ' ms';
-
-      cycleTimer = setTimeout(() => {
+        // Se não achou nenhum rosto
         setLegendState('waiting');
+        setPersonUnknown();
+        personSub.textContent = 'Aguardando detecção';
         faceBoxesEl.innerHTML = '';
-        cycleTimer = setTimeout(runDetectionCycle, 900);
-      }, 1600);
-    }, 700);
+      }
+
+    } catch (error) {
+      console.error("Falha na inferência:", error);
+      setLegendState('error');
+      setPersonUnknown();
+      personSub.textContent = 'Erro de conexão com o servidor';
+    }
+
+    // 5. Agendar o próximo frame (ex: roda a cada 1 segundo para não sobrecarregar)
+    if (running) {
+      cycleTimer = setTimeout(runDetectionCycle, 1000); 
+    }
   }
+
 
   async function startCamera(){
     camBtn.disabled = true;
