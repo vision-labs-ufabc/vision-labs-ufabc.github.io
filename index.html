@@ -554,23 +554,40 @@
     return canvas.toDataURL('image/jpeg');
   }
 
-  function renderHistory(){
-    historyList.innerHTML = "";
-    history.slice(0,6).forEach(([name,time,score]) => {
-      const row = document.createElement('div');
-      row.className = 'history-item empty-fade';
-      const cls = score >= 90 ? 'high' : 'mid';
-      row.innerHTML = `
-        <div class="h-avatar" style="background:${colorFor(name)}">${initials(name)}</div>
-        <div class="h-info">
-          <div class="h-name">${name}</div>
-          <div class="h-time">${time}</div>
-        </div>
-        <div class="h-score ${cls}">${score.toFixed(1)}%</div>
-      `;
-      historyList.appendChild(row);
+  // Função para capturar o frame do vídeo e converter em Arquivo (Blob)
+  function captureFrameAsBlob() {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      // Converte o canvas para um Blob JPEG com 85% de qualidade
+      canvas.toBlob((blob) => {
+        resolve(blob);
+      }, 'image/jpeg', 0.85);
     });
   }
+
+    function renderHistory(){
+      historyList.innerHTML = "";
+      history.slice(0,6).forEach(([name,time,score]) => {
+        const row = document.createElement('div');
+        row.className = 'history-item empty-fade';
+        const cls = score >= 90 ? 'high' : 'mid';
+        row.innerHTML = `
+          <div class="h-avatar" style="background:${colorFor(name)}">${initials(name)}</div>
+          <div class="h-info">
+            <div class="h-name">${name}</div>
+            <div class="h-time">${time}</div>
+          </div>
+          <div class="h-score ${cls}">${score.toFixed(1)}%</div>
+        `;
+        historyList.appendChild(row);
+      });
+    }
 
   function setLegendState(state){
     [...legend.children].forEach(p => p.classList.toggle('active', p.dataset.state === state));
@@ -699,33 +716,37 @@
     if (!running) return;
     setLegendState('detecting');
 
-    // Verifica se o vídeo tem dimensões válidas para capturar
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       cycleTimer = setTimeout(runDetectionCycle, 500);
       return;
     }
 
-    // 1. Capturar o frame
-    const base64Image = captureFrameFromVideo();
     const startTime = Date.now();
 
     try {
-      // 2. Enviar para a API /recognize
+      // 1. Capturar o frame como Arquivo (Blob)
+      const imageBlob = await captureFrameAsBlob();
+      
+      // 2. Montar o formulário (FormData) simulando o upload do campo 'file'
+      const formData = new FormData();
+      formData.append('file', imageBlob, 'frame.jpg');
+
+      // 3. Enviar para a API /recognize
       const response = await fetch(`${API_BASE_URL}/recognize`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        // Envia o JSON com a chave "image" exigida pelo FastAPI
-        body: JSON.stringify({ image: base64Image }) 
+        // ATENÇÃO: Nunca defina 'Content-Type' manualmente ao usar FormData!
+        body: formData 
       });
 
-      if (!response.ok) throw new Error("Erro na API");
+      if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Erro HTTP: ${response.status} - ${errorText}`);
+      }
 
       const data = await response.json();
       const latency = Date.now() - startTime;
 
-      // 3. Atualizar a seção "Resultado da Predição"
+      // 4. Atualizar a seção "Resultado da Predição"
       updatePredictionMetrics({
         confidence: data.confianca,
         inference_ms: data.tempo_inferencia,
@@ -734,12 +755,12 @@
         faces_detected: data.rostos_encontrados
       });
 
-      // 4. Atualizar o Card de Pessoa Reconhecida e a Bounding Box
+      // 5. Atualizar o Card de Pessoa Reconhecida e a Bounding Box
       if (data.rostos_encontrados > 0) {
         if (data.reconhecido) {
           setLegendState('recognized');
           setPersonRecognized(data.nome, data.confianca);
-          drawFaceBox(true, data.nome); // Pode precisar adaptar coordenadas futuramente
+          drawFaceBox(true, data.nome);
           
           // Atualiza o histórico
           history.unshift([data.nome, nowLabel(), data.confianca]);
@@ -753,7 +774,6 @@
           drawFaceBox(false, '');
         }
       } else {
-        // Se não achou nenhum rosto
         setLegendState('waiting');
         setPersonUnknown();
         personSub.textContent = 'Aguardando detecção';
@@ -767,12 +787,11 @@
       personSub.textContent = 'Erro de conexão com o servidor';
     }
 
-    // 5. Agendar o próximo frame (ex: roda a cada 1 segundo para não sobrecarregar)
+    // 6. Agendar o próximo frame 
     if (running) {
       cycleTimer = setTimeout(runDetectionCycle, 1000); 
     }
   }
-
 
   async function startCamera(){
     camBtn.disabled = true;
