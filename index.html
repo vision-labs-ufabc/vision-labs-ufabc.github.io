@@ -383,7 +383,7 @@
           </div>
           <div class="mini-card">
             <div class="label">Backend</div>
-            <div class="value"><span class="dot dot-green"></span>Conectado</div>
+            <div class="value" id="backendValue"><span class="dot dot-red"></span>Verificando…</div>
           </div>
           <div class="mini-card">
             <div class="label">Modelo</div>
@@ -429,20 +429,20 @@
           <div class="model-tag">FaceNet v2.1</div>
 
           <div class="gauge">
-            <div class="gauge-top"><span class="k">Acurácia</span><span class="v">96.7%</span></div>
-            <div class="gauge-track"><div class="gauge-fill" data-target="96.7"></div></div>
+            <div class="gauge-top"><span class="k">Acurácia</span><span class="v" id="modelAccValue">–</span></div>
+            <div class="gauge-track"><div class="gauge-fill" id="modelAccFill" data-target="0"></div></div>
           </div>
           <div class="gauge">
-            <div class="gauge-top"><span class="k">Precisão</span><span class="v">95.2%</span></div>
-            <div class="gauge-track"><div class="gauge-fill" data-target="95.2"></div></div>
+            <div class="gauge-top"><span class="k">Precisão</span><span class="v" id="modelPrecValue">–</span></div>
+            <div class="gauge-track"><div class="gauge-fill" id="modelPrecFill" data-target="0"></div></div>
           </div>
           <div class="gauge">
-            <div class="gauge-top"><span class="k">Recall</span><span class="v">97.1%</span></div>
-            <div class="gauge-track"><div class="gauge-fill" data-target="97.1"></div></div>
+            <div class="gauge-top"><span class="k">Recall</span><span class="v" id="modelRecallValue">–</span></div>
+            <div class="gauge-track"><div class="gauge-fill" id="modelRecallFill" data-target="0"></div></div>
           </div>
           <div class="gauge">
-            <div class="gauge-top"><span class="k">F1-Score</span><span class="v">96.1%</span></div>
-            <div class="gauge-track"><div class="gauge-fill" data-target="96.1"></div></div>
+            <div class="gauge-top"><span class="k">F1-Score</span><span class="v" id="modelF1Value">–</span></div>
+            <div class="gauge-track"><div class="gauge-fill" id="modelF1Fill" data-target="0"></div></div>
           </div>
 
           <div class="totals-row">
@@ -464,6 +464,12 @@
 
 <script>
 (() => {
+  const API_BASE_URL = 'https://face-recognition-api-l7x5.onrender.com';
+  const API_HEALTH_URL = `${API_BASE_URL}/health`;
+  const API_METRICS_URL = `${API_BASE_URL}/metrics`;
+
+  let latestMetrics = {};
+
   // ---------- fake identity pool ----------
   const names = [
     "Ana Luísa Ferreira","Carlos Henrique Melo","Mariana Costa","Rafael Oliveira",
@@ -511,6 +517,15 @@
   const mFaces = document.getElementById('mFaces');
   const totalIds = document.getElementById('totalIds');
   const historyList = document.getElementById('historyList');
+  const backendValue = document.getElementById('backendValue');
+  const modelAccValue = document.getElementById('modelAccValue');
+  const modelPrecValue = document.getElementById('modelPrecValue');
+  const modelRecallValue = document.getElementById('modelRecallValue');
+  const modelF1Value = document.getElementById('modelF1Value');
+  const modelAccFill = document.getElementById('modelAccFill');
+  const modelPrecFill = document.getElementById('modelPrecFill');
+  const modelRecallFill = document.getElementById('modelRecallFill');
+  const modelF1Fill = document.getElementById('modelF1Fill');
 
   let running = false;
   let stream = null;
@@ -544,6 +559,89 @@
 
   function setLegendState(state){
     [...legend.children].forEach(p => p.classList.toggle('active', p.dataset.state === state));
+  }
+
+  function setBackendStatus(online, label, detail){
+    const dotClass = online ? 'dot-green' : 'dot-red';
+    const statusLabel = label || (online ? 'Online' : 'Offline');
+    backendValue.innerHTML = `<span class="dot ${dotClass}"></span>${statusLabel}`;
+
+    connStatus.classList.toggle('online', online);
+    connLabel.textContent = online ? 'API online' : 'API offline';
+
+    if (detail) {
+      backendValue.title = detail;
+    }
+  }
+
+  function setMetricText(value){
+    if (value === null || value === undefined || value === '') return '–';
+    if (typeof value === 'number') return Number.isFinite(value) ? value.toString() : '–';
+    return String(value);
+  }
+
+  function updatePredictionMetrics(metrics){
+    mConf.textContent = setMetricText(metrics.confidence ?? '–');
+    mInf.textContent = setMetricText(metrics.inference_ms ? `${metrics.inference_ms} ms` : '–');
+    mLat.textContent = setMetricText(metrics.latency_ms ? `${metrics.latency_ms} ms` : '–');
+    mDist.textContent = setMetricText(metrics.embedding_distance ?? '–');
+    mFaces.textContent = setMetricText(metrics.faces_detected ?? 0);
+  }
+
+  function updateModelMetrics(metrics){
+    const accuracy = metrics.acuracia ?? null;
+    const precision = metrics.precisao ?? null;
+    const recall = metrics.recall ?? null;
+    const f1 = metrics.f1_score ?? null;
+
+    modelAccValue.textContent = accuracy !== null ? setMetricText(`${accuracy.toFixed(1)}%`) : '–';
+    modelPrecValue.textContent = precision !== null ? setMetricText(`${precision.toFixed(1)}%`) : '–';
+    modelRecallValue.textContent = recall !== null ? setMetricText(`${recall.toFixed(1)}%`) : '–';
+    modelF1Value.textContent = f1 !== null ? setMetricText(`${f1.toFixed(1)}%`) : '–';
+
+    modelAccFill.style.width = `${accuracy ?? 0}%`;
+    modelPrecFill.style.width = `${precision ?? 0}%`;
+    modelRecallFill.style.width = `${recall ?? 0}%`;
+    modelF1Fill.style.width = `${f1 ?? 0}%`;
+  }
+
+  async function fetchMetrics(){
+    try {
+      const response = await fetch(API_METRICS_URL, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function checkApiHealth(){
+    try {
+      const response = await fetch(API_HEALTH_URL, { cache: 'no-store' });
+      const text = await response.text();
+      let parsed = null;
+
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        parsed = null;
+      }
+
+      const statusText = parsed?.status || parsed?.message || text || 'OK';
+      const isHealthy = response.ok && (statusText === 'ok' || statusText === 'healthy' || statusText === 'OK');
+
+      setBackendStatus(isHealthy, isHealthy ? 'Online' : 'Indefinido', `/${response.ok ? 'health' : 'erro'} · ${statusText}`);
+      const metrics = await fetchMetrics();
+      if (metrics) {
+        updateModelMetrics(metrics);
+      } else {
+        updateModelMetrics({});
+      }
+    } catch (error) {
+      setBackendStatus(false, 'Offline', 'Falha ao consultar a API');
+      updateModelMetrics({});
+    }
   }
 
   function setPersonUnknown(){
@@ -671,7 +769,8 @@
     connLabel.textContent = 'Offline';
     setLegendState(null);
     setPersonUnknown();
-    mConf.textContent = '–'; mInf.textContent = '–'; mLat.textContent = '–'; mDist.textContent = '–'; mFaces.textContent = '0';
+    updatePredictionMetrics({});
+    updateModelMetrics({});
   }
 
   camBtn.addEventListener('click', () => running ? stopCamera() : startCamera());
@@ -679,6 +778,10 @@
   // init
   renderHistory();
   setPersonUnknown();
+  updatePredictionMetrics({});
+  updateModelMetrics({});
+  checkApiHealth();
+  setInterval(checkApiHealth, 20000);
   document.querySelectorAll('.gauge-fill').forEach(el => {
     requestAnimationFrame(() => { el.style.width = el.dataset.target + '%'; });
   });
